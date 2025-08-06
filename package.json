@@ -1,0 +1,14 @@
+{
+  "name": "line-group-guardian-heroku",
+  "version": "1.0.0",
+  "description": "A LINE bot to manage a group with passwords and blacklists.",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@line/bot-sdk": "^8.4.1",
+    "express": "^4.19.2",
+    "pg": "^8.11.3"
+  }
+}
