@@ -86,33 +86,52 @@ async function handleMessage(groupId, message, userId, replyToken) {
     const args = text.split(' ').slice(1);
 
     if (command.startsWith('!')) {
-        if (command === '!setadmin') return handleSetAdmin(groupId, userId, replyToken, message.mention);
-        if (!await db.isAdmin(groupId, userId)) return null; 
+        if (command === '!setadmin') {
+            // Pass replyToken only to setadmin as it has special public/private reply logic
+            return handleSetAdmin(groupId, userId, replyToken, message.mention);
+        }
+
+        if (!await db.isAdmin(groupId, userId)) {
+            return null; 
+        }
         
+        // For all other commands, we send a private message (push) and don't reply to the group.
         switch (command) {
             case '!setpassword':
-                return handleSetPassword(groupId, replyToken, args);
+                await handleSetPassword(groupId, userId, args);
+                break;
             case '!setpasswordtimeout':
-                return handleSetPasswordTimeout(groupId, replyToken, args);
+                await handleSetPasswordTimeout(groupId, userId, args);
+                break;
             case '!addblacklist':
-                return handleAddBlacklistWords(groupId, replyToken, args);
+                await handleAddBlacklistWords(groupId, userId, args);
+                break;
             case '!removeblacklist':
-                return handleRemoveBlacklistWords(groupId, replyToken, args);
+                await handleRemoveBlacklistWords(groupId, userId, args);
+                break;
             case '!blacklistuser':
-                return handleBlacklistUser(groupId, replyToken, message.mention);
+                await handleBlacklistUser(groupId, userId, message.mention);
+                break;
             case '!unblacklistuser':
-                return handleUnblacklistUser(groupId, replyToken, message.mention);
+                await handleUnblacklistUser(groupId, userId, message.mention);
+                break;
             case '!status':
-                return handleStatusCommand(groupId, replyToken);
+                await handleStatusCommand(groupId, userId);
+                break;
             case '!showblacklistwords':
-                return handleShowBlacklistWords(groupId, replyToken);
+                await handleShowBlacklistWords(groupId, userId);
+                break;
             case '!showblacklistusers':
-                return handleShowBlacklistUsers(groupId, replyToken);
+                await handleShowBlacklistUsers(groupId, userId);
+                break;
             case '!help':
-                return handleHelpCommand(replyToken);
+                await handleHelpCommand(userId);
+                break;
             default:
-                return client.replyMessage(replyToken, { type: 'text', text: `Unknown command: ${command}. Use !help to see all available commands.` });
+                await client.pushMessage(userId, { type: 'text', text: `Unknown command: ${command}. Use !help to see all available commands.` });
+                break;
         }
+        return null; // Prevent any public reply
     } else {
         return checkMessageForBlacklist(groupId, userId, text);
     }
@@ -151,79 +170,85 @@ async function handleMemberJoined(groupId, members) {
 // 6. COMMAND-SPECIFIC LOGIC (WITH ERROR HANDLING)
 // =================================================================
 
-async function handleAddBlacklistWords(groupId, replyToken, args) {
-    try {
-        if (args.length === 0) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !addblacklist [word]...' });
-        await db.addBlacklistWords(groupId, args);
-        return client.replyMessage(replyToken, { type: 'text', text: `Added ${args.length} word(s) to blacklist.` });
-    } catch (err) {
-        console.error("Error in handleAddBlacklistWords:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while adding to the blacklist.' });
-    }
-}
-
-async function handleRemoveBlacklistWords(groupId, replyToken, args) {
-    try {
-        if (args.length === 0) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !removeblacklist [word]...' });
-        await db.removeBlacklistWords(groupId, args);
-        return client.replyMessage(replyToken, { type: 'text', text: `Removed ${args.length} word(s) from blacklist.` });
-    } catch (err) {
-        console.error("Error in handleRemoveBlacklistWords:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while removing from the blacklist.' });
-    }
-}
-
-async function handleSetPassword(groupId, replyToken, args) {
-    try {
-        if (args.length === 0) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !setpassword [new_password|off]' });
-        const newPassword = args[0];
-        if (newPassword.toLowerCase() === 'off') {
-            await db.setPassword(groupId, null);
-            return client.replyMessage(replyToken, { type: 'text', text: 'Password protection has been disabled.' });
-        }
-        await db.setPassword(groupId, newPassword);
-        return client.replyMessage(replyToken, { type: 'text', text: `The group password has been set to: ${newPassword}` });
-    } catch (err) {
-        console.error("Error in handleSetPassword:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while setting the password.' });
-    }
-}
-
-async function handleSetPasswordTimeout(groupId, replyToken, args) {
-    try {
-        if (args.length === 0) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !setpasswordtimeout [minutes]' });
-        const minutes = parseInt(args[0], 10);
-        if (isNaN(minutes) || minutes <= 0) return client.replyMessage(replyToken, { type: 'text', text: 'Please provide a valid number of minutes.' });
-        await db.setPasswordTimeout(groupId, minutes);
-        return client.replyMessage(replyToken, { type: 'text', text: `Password timeout has been set to ${minutes} minute(s).` });
-    } catch (err) {
-        console.error("Error in handleSetPasswordTimeout:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while setting the timeout.' });
-    }
-}
-
 async function handleSetAdmin(groupId, senderId, replyToken, mention) {
     try {
         const settings = await db.getGroupSettings(groupId);
+        // Case 1: No admins exist. The first user becomes admin. Reply publicly.
         if (settings.admins.length === 0) {
             await db.addAdmin(groupId, senderId);
             return client.replyMessage(replyToken, { type: 'text', text: 'You are now the first admin.' });
         }
+
+        // Case 2: An admin is adding another admin. Reply privately.
         if (await db.isAdmin(groupId, senderId)) {
             const mentionedUser = mention ? mention.mentionees[0] : null;
-            if (!mentionedUser) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !setadmin @username' });
-            if (await db.isAdmin(groupId, mentionedUser.userId)) return client.replyMessage(replyToken, { type: 'text', text: 'This user is already an admin.' });
+            if (!mentionedUser) return client.pushMessage(senderId, { type: 'text', text: 'Usage: !setadmin @username' });
+            if (await db.isAdmin(groupId, mentionedUser.userId)) return client.pushMessage(senderId, { type: 'text', text: 'This user is already an admin.' });
+            
             await db.addAdmin(groupId, mentionedUser.userId);
-            return client.replyMessage(replyToken, { type: 'text', text: 'New admin added.' });
+            return client.pushMessage(senderId, { type: 'text', text: 'New admin added successfully.' });
         }
-        return null;
+        return null; // Non-admin trying to use the command when admins exist.
     } catch (err) {
         console.error("Error in handleSetAdmin:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while setting an admin.' });
+        // Attempt to notify the admin privately of the error.
+        if (replyToken) return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while setting an admin.' });
+        return null;
     }
 }
 
-function handleHelpCommand(replyToken) {
+async function handleAddBlacklistWords(groupId, userId, args) {
+    try {
+        if (args.length === 0) return client.pushMessage(userId, { type: 'text', text: 'Usage: !addblacklist [word]...' });
+        await db.addBlacklistWords(groupId, args);
+        return client.pushMessage(userId, { type: 'text', text: `Added ${args.length} word(s) to blacklist.` });
+    } catch (err) {
+        console.error("Error in handleAddBlacklistWords:", err);
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while adding to the blacklist.' });
+    }
+}
+
+async function handleRemoveBlacklistWords(groupId, userId, args) {
+    try {
+        if (args.length === 0) return client.pushMessage(userId, { type: 'text', text: 'Usage: !removeblacklist [word]...' });
+        await db.removeBlacklistWords(groupId, args);
+        return client.pushMessage(userId, { type: 'text', text: `Removed ${args.length} word(s) from blacklist.` });
+    } catch (err) {
+        console.error("Error in handleRemoveBlacklistWords:", err);
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while removing from the blacklist.' });
+    }
+}
+
+async function handleSetPassword(groupId, userId, args) {
+    try {
+        if (args.length === 0) return client.pushMessage(userId, { type: 'text', text: 'Usage: !setpassword [new_password|off]' });
+        const newPassword = args[0];
+        if (newPassword.toLowerCase() === 'off') {
+            await db.setPassword(groupId, null);
+            return client.pushMessage(userId, { type: 'text', text: 'Password protection has been disabled.' });
+        }
+        await db.setPassword(groupId, newPassword);
+        return client.pushMessage(userId, { type: 'text', text: `The group password has been set to: ${newPassword}` });
+    } catch (err) {
+        console.error("Error in handleSetPassword:", err);
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while setting the password.' });
+    }
+}
+
+async function handleSetPasswordTimeout(groupId, userId, args) {
+    try {
+        if (args.length === 0) return client.pushMessage(userId, { type: 'text', text: 'Usage: !setpasswordtimeout [minutes]' });
+        const minutes = parseInt(args[0], 10);
+        if (isNaN(minutes) || minutes <= 0) return client.pushMessage(userId, { type: 'text', text: 'Please provide a valid number of minutes.' });
+        await db.setPasswordTimeout(groupId, minutes);
+        return client.pushMessage(userId, { type: 'text', text: `Password timeout has been set to ${minutes} minute(s).` });
+    } catch (err) {
+        console.error("Error in handleSetPasswordTimeout:", err);
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while setting the timeout.' });
+    }
+}
+
+function handleHelpCommand(userId) {
     const helpText = `--- Admin Commands ---
 !help
 !status
@@ -236,40 +261,40 @@ function handleHelpCommand(replyToken) {
 !removeblacklist [word]...
 !blacklistuser @user
 !unblacklistuser @user`;
-    return client.replyMessage(replyToken, { type: 'text', text: helpText });
+    return client.pushMessage(userId, { type: 'text', text: helpText });
 }
 
-async function handleBlacklistUser(groupId, replyToken, mention) {
+async function handleBlacklistUser(groupId, userId, mention) {
     try {
         const mentionedUser = mention ? mention.mentionees[0] : null;
-        if (!mentionedUser) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !blacklistuser @username' });
-        if (await db.isAdmin(groupId, mentionedUser.userId)) return client.replyMessage(replyToken, { type: 'text', text: 'You cannot blacklist an admin.' });
+        if (!mentionedUser) return client.pushMessage(userId, { type: 'text', text: 'Usage: !blacklistuser @username' });
+        if (await db.isAdmin(groupId, mentionedUser.userId)) return client.pushMessage(userId, { type: 'text', text: 'You cannot blacklist an admin.' });
         
         await db.addUserToBlacklist(groupId, mentionedUser.userId);
         const profile = await client.getGroupMemberProfile(groupId, mentionedUser.userId);
         await kickUser(groupId, mentionedUser.userId, 'User has been blacklisted.');
-        return client.replyMessage(replyToken, { type: 'text', text: `${profile.displayName} has been blacklisted and removed.` });
+        return client.pushMessage(userId, { type: 'text', text: `${profile.displayName} has been blacklisted and removed.` });
     } catch (e) {
         console.error("Error in handleBlacklistUser:", e);
-        return client.replyMessage(replyToken, { type: 'text', text: `User ID added to blacklist, but could not be removed from group (may have already left).` });
+        return client.pushMessage(userId, { type: 'text', text: `User ID added to blacklist, but could not be removed from group (may have already left).` });
     }
 }
 
-async function handleUnblacklistUser(groupId, replyToken, mention) {
+async function handleUnblacklistUser(groupId, userId, mention) {
     try {
         const mentionedUser = mention ? mention.mentionees[0] : null;
-        if (!mentionedUser) return client.replyMessage(replyToken, { type: 'text', text: 'Usage: !unblacklistuser @username' });
+        if (!mentionedUser) return client.pushMessage(userId, { type: 'text', text: 'Usage: !unblacklistuser @username' });
         
         await db.removeUserFromBlacklist(groupId, mentionedUser.userId);
         const profile = await client.getProfile(mentionedUser.userId).catch(() => null);
-        return client.replyMessage(replyToken, { type: 'text', text: `${profile ? profile.displayName : 'The user'} has been unblacklisted.` });
+        return client.pushMessage(userId, { type: 'text', text: `${profile ? profile.displayName : 'The user'} has been unblacklisted.` });
     } catch (err) {
         console.error("Error in handleUnblacklistUser:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while unblacklisting the user.' });
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while unblacklisting the user.' });
     }
 }
 
-async function handleStatusCommand(groupId, replyToken) {
+async function handleStatusCommand(groupId, userId) {
     try {
         const settings = await db.getGroupSettings(groupId);
         const timeout = settings.password_timeout_minutes || DEFAULT_PASSWORD_TIMEOUT_MINUTES;
@@ -281,26 +306,26 @@ async function handleStatusCommand(groupId, replyToken) {
         statusText += `Blacklisted Words: ${settings.blacklist_words.length}\n`;
         statusText += `Blacklisted Users: ${settings.blacklist_users.length}`;
 
-        return client.replyMessage(replyToken, { type: 'text', text: statusText });
+        return client.pushMessage(userId, { type: 'text', text: statusText });
     } catch (err) {
         console.error(`Error in handleStatusCommand:`, err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'Error fetching status.' });
+        return client.pushMessage(userId, { type: 'text', text: 'Error fetching status.' });
     }
 }
 
-async function handleShowBlacklistWords(groupId, replyToken) {
+async function handleShowBlacklistWords(groupId, userId) {
     try {
         const settings = await db.getGroupSettings(groupId);
         let list = settings.blacklist_words.length > 0 ? settings.blacklist_words.join(', ') : 'None';
         if (list.length > MAX_REPLY_LENGTH) list = list.substring(0, MAX_REPLY_LENGTH) + `...`;
-        return client.replyMessage(replyToken, { type: 'text', text: `--- Blacklisted Words (${settings.blacklist_words.length}) ---\n${list}` });
+        return client.pushMessage(userId, { type: 'text', text: `--- Blacklisted Words (${settings.blacklist_words.length}) ---\n${list}` });
     } catch (err) {
         console.error("Error in handleShowBlacklistWords:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while fetching the word blacklist.' });
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while fetching the word blacklist.' });
     }
 }
 
-async function handleShowBlacklistUsers(groupId, replyToken) {
+async function handleShowBlacklistUsers(groupId, userId) {
     try {
         const settings = await db.getGroupSettings(groupId);
         let userListText = 'None';
@@ -309,10 +334,10 @@ async function handleShowBlacklistUsers(groupId, replyToken) {
             userListText = profiles.map(p => p.displayName).join(', ');
             if (userListText.length > MAX_REPLY_LENGTH) userListText = userListText.substring(0, MAX_REPLY_LENGTH) + `...`;
         }
-        return client.replyMessage(replyToken, { type: 'text', text: `--- Blacklisted Users (${settings.blacklist_users.length}) ---\n${userListText}` });
+        return client.pushMessage(userId, { type: 'text', text: `--- Blacklisted Users (${settings.blacklist_users.length}) ---\n${userListText}` });
     } catch (err) {
         console.error("Error in handleShowBlacklistUsers:", err);
-        return client.replyMessage(replyToken, { type: 'text', text: 'An error occurred while fetching the user blacklist.' });
+        return client.pushMessage(userId, { type: 'text', text: 'An error occurred while fetching the user blacklist.' });
     }
 }
 
